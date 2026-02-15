@@ -6,12 +6,22 @@ export class Bot {
     private readonly commands: Map<string, Command> = new Map();
 
     constructor(private readonly token: string) {
-        this.client = new Client({ intents: [GatewayIntentBits.Guilds] });
+        this.client = new Client({
+            intents: [
+                GatewayIntentBits.Guilds,
+                GatewayIntentBits.GuildMessages,
+                GatewayIntentBits.MessageContent
+            ]
+        });
         this.client.once('clientReady', () => this.onReady());
         this.client.on('interactionCreate', (interaction) => {
             if (interaction.isChatInputCommand()) {
                 this.onCommand(interaction);
             }
+        });
+        this.client.on('messageCreate', (message) => {
+            if (message.author.bot) return;
+            this.onMessageCommand(message);
         });
     }
 
@@ -42,6 +52,21 @@ export class Bot {
             await command.execute(interaction);
         } catch (err) {
             console.error(`Command error [${interaction.commandName}]:`, err);
+        }
+    }
+
+    private async onMessageCommand(message: import('discord.js').Message): Promise<void> {
+        const content = message.content.trim();
+        if (!content.startsWith('!')) return;
+
+        const commandName = content.slice(1).split(/\s+/)[0].toLowerCase();
+        const command = this.commands.get(commandName);
+        if (!command || !command.onMessage) return;
+
+        try {
+            await command.onMessage(message);
+        } catch (err) {
+            console.error(`Message command error [${commandName}]:`, err);
         }
     }
 }

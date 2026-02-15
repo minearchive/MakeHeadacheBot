@@ -1,4 +1,4 @@
-import { ChatInputCommandInteraction, SlashCommandBuilder, AttachmentBuilder } from 'discord.js';
+import { ChatInputCommandInteraction, SlashCommandBuilder, AttachmentBuilder, Message } from 'discord.js';
 import { Command } from '../command';
 import { compose, OutputFormat } from '../compose';
 import * as path from 'path';
@@ -30,14 +30,20 @@ export class FireCommand implements Command {
             option.setName('low_quality')
                 .setDescription('Extra low quality output')
                 .setRequired(false)
+        )
+        .addAttachmentOption(option =>
+            option.setName('image')
+                .setDescription('Image to use (defaults to avatar)')
+                .setRequired(false)
         ) as SlashCommandBuilder;
 
     async execute(interaction: ChatInputCommandInteraction): Promise<void> {
         await interaction.deferReply();
 
+        const imageAttachment = interaction.options.getAttachment('image');
         const targetUser = interaction.options.getUser('user') || interaction.user;
-        const avatarUrl = targetUser.displayAvatarURL({ size: 1024, extension: 'png' });
-        const avatarPath = this.tempPath('.png');
+        const imageUrl = imageAttachment?.url ?? targetUser.displayAvatarURL({ size: 1024, extension: 'png' });
+        const imagePath = this.tempPath('.png');
         const format = (interaction.options.getString('format') || 'gif') as OutputFormat;
         const lowQuality = interaction.options.getBoolean('low_quality') ?? false;
         const ext = format === 'gif' ? '.gif' : '.mp4';
@@ -50,8 +56,8 @@ export class FireCommand implements Command {
                 return;
             }
 
-            await this.downloadFile(avatarUrl, avatarPath);
-            await compose(avatarPath, fgPath, outputPath, format, lowQuality);
+            await this.downloadFile(imageUrl, imagePath);
+            await compose(imagePath, fgPath, outputPath, format, lowQuality);
 
             const attachment = new AttachmentBuilder(outputPath, { name: `fire${ext}` });
             await interaction.editReply({ files: [attachment] });
@@ -60,7 +66,53 @@ export class FireCommand implements Command {
             const message = err instanceof Error ? err.message : String(err);
             await interaction.editReply(`Error: ${message}`).catch(() => { });
         } finally {
-            this.cleanup(avatarPath, outputPath);
+            this.cleanup(imagePath, outputPath);
+        }
+    }
+
+    async onMessage(message: Message): Promise<void> {
+        const fgPath = path.resolve(config.foregroundVideo);
+        if (!fs.existsSync(fgPath)) {
+            await message.reply('Error: foreground video file not found');
+            return;
+        }
+
+        const imageAttachments = message.attachments.filter(
+            a => a.contentType?.startsWith('image/')
+        );
+
+        let replyPrefix = '';
+        let imageUrl: string;
+        let imagePath: string;
+
+        if (imageAttachments.size > 0) {
+            if (imageAttachments.size > 1) {
+                replyPrefix = '⚠️ 複数の添付ファイルがありますが、最初の画像のみ使用します。\n';
+            }
+            const firstImage = imageAttachments.first()!;
+            imageUrl = firstImage.url;
+            imagePath = this.tempPath(path.extname(firstImage.name || '.png') || '.png');
+        } else {
+            imageUrl = message.author.displayAvatarURL({ size: 1024, extension: 'png' });
+            imagePath = this.tempPath('.png');
+        }
+
+        const format: OutputFormat = 'gif';
+        const ext = '.gif';
+        const outputPath = this.tempPath(ext);
+
+        try {
+            await this.downloadFile(imageUrl, imagePath);
+            await compose(imagePath, fgPath, outputPath, format);
+
+            const attachment = new AttachmentBuilder(outputPath, { name: `fire${ext}` });
+            await message.reply({ content: replyPrefix || undefined, files: [attachment] });
+        } catch (err) {
+            console.error('Error:', err);
+            const errMsg = err instanceof Error ? err.message : String(err);
+            await message.reply(`Error: ${errMsg}`).catch(() => { });
+        } finally {
+            this.cleanup(imagePath, outputPath);
         }
     }
 
@@ -88,3 +140,4 @@ export class FireCommand implements Command {
         }
     }
 }
+
