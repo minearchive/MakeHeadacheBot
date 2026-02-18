@@ -87,6 +87,24 @@ function mp4ToGif(mp4Path: string, gifPath: string): Promise<string> {
     });
 }
 
+export function gifToMp4(gifPath: string, mp4Path: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+        ffmpeg()
+            .input(gifPath)
+            .outputOptions([
+                '-c:v libx264',
+                '-preset ultrafast',
+                '-crf 35',
+                '-pix_fmt yuv420p',
+                '-movflags +faststart'
+            ])
+            .noAudio()
+            .save(mp4Path)
+            .on('end', () => resolve(mp4Path))
+            .on('error', (e) => reject(new Error(`ffmpeg gif->mp4 error: ${e.message}`)));
+    });
+}
+
 export async function compose(backgroundPath: string, foregroundPath: string, outputPath: string, format: OutputFormat = 'mp4', lowQuality: boolean = false): Promise<string> {
     if (format === 'mp4') {
         return renderMp4(backgroundPath, foregroundPath, outputPath, lowQuality);

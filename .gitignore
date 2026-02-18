@@ -3,3 +3,7 @@ dist/
 *.mp4
 *.gif
 config.json
+run/
+*.db
+*.db-shm
+*.db-wal

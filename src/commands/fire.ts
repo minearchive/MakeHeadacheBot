@@ -1,12 +1,20 @@
 import { ChatInputCommandInteraction, SlashCommandBuilder, AttachmentBuilder, Message } from 'discord.js';
 import { Command } from '../command';
-import { compose, OutputFormat } from '../compose';
+import { compose, OutputFormat, gifToMp4 } from '../compose';
+import { generateCacheId, getCachedResult, saveCacheResult } from '../cache';
+import logger from '../logger';
+import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as https from 'https';
 import * as http from 'http';
 import config from '../../config.json';
+
+interface ProcessResult {
+    filePath: string;
+    cleanup: () => void;
+}
 
 export class FireCommand implements Command {
     readonly data = new SlashCommandBuilder()
@@ -43,77 +51,118 @@ export class FireCommand implements Command {
         const imageAttachment = interaction.options.getAttachment('image');
         const targetUser = interaction.options.getUser('user') || interaction.user;
         const imageUrl = imageAttachment?.url ?? targetUser.displayAvatarURL({ size: 1024, extension: 'png' });
-        const imagePath = this.tempPath('.png');
         const format = (interaction.options.getString('format') || 'gif') as OutputFormat;
         const lowQuality = interaction.options.getBoolean('low_quality') ?? false;
-        const ext = format === 'gif' ? '.gif' : '.mp4';
-        const outputPath = this.tempPath(ext);
-        const fgPath = path.resolve(config.foregroundVideo);
 
         try {
-            if (!fs.existsSync(fgPath)) {
-                await interaction.editReply('Error: foreground video file not found');
-                return;
+            const result = await this.processImage(imageUrl, format, lowQuality);
+            try {
+                const ext = format === 'gif' ? '.gif' : '.mp4';
+                const attachment = new AttachmentBuilder(result.filePath, { name: `fire${ext}` });
+                await interaction.editReply({ files: [attachment] });
+            } finally {
+                result.cleanup();
             }
-
-            await this.downloadFile(imageUrl, imagePath);
-            await compose(imagePath, fgPath, outputPath, format, lowQuality);
-
-            const attachment = new AttachmentBuilder(outputPath, { name: `fire${ext}` });
-            await interaction.editReply({ files: [attachment] });
         } catch (err) {
-            console.error('Error:', err);
+            logger.error(`Error: ${err}`);
             const message = err instanceof Error ? err.message : String(err);
             await interaction.editReply(`Error: ${message}`).catch(() => { });
-        } finally {
-            this.cleanup(imagePath, outputPath);
         }
     }
 
     async onMessage(message: Message): Promise<void> {
-        const fgPath = path.resolve(config.foregroundVideo);
-        if (!fs.existsSync(fgPath)) {
-            await message.reply('Error: foreground video file not found');
-            return;
-        }
-
         const imageAttachments = message.attachments.filter(
             a => a.contentType?.startsWith('image/')
         );
 
         let replyPrefix = '';
         let imageUrl: string;
-        let imagePath: string;
 
         if (imageAttachments.size > 0) {
             if (imageAttachments.size > 1) {
                 replyPrefix = '⚠️ 複数の添付ファイルがありますが、最初の画像のみ使用します。\n';
             }
-            const firstImage = imageAttachments.first()!;
-            imageUrl = firstImage.url;
-            imagePath = this.tempPath(path.extname(firstImage.name || '.png') || '.png');
+            imageUrl = imageAttachments.first()!.url;
+        } else if (message.reference?.messageId) {
+            const refMessage = await message.channel.messages.fetch(message.reference.messageId);
+            const refImageAttachments = refMessage.attachments.filter(
+                a => a.contentType?.startsWith('image/')
+            );
+            if (refImageAttachments.size > 0) {
+                if (refImageAttachments.size > 1) {
+                    replyPrefix = '⚠️ リプライ先に複数の画像がありますが、最初の画像のみ使用します。\n';
+                }
+                imageUrl = refImageAttachments.first()!.url;
+            } else {
+                imageUrl = message.author.displayAvatarURL({ size: 1024, extension: 'png' });
+            }
         } else {
             imageUrl = message.author.displayAvatarURL({ size: 1024, extension: 'png' });
-            imagePath = this.tempPath('.png');
         }
 
-        const format: OutputFormat = 'gif';
-        const ext = '.gif';
-        const outputPath = this.tempPath(ext);
-
         try {
-            await this.downloadFile(imageUrl, imagePath);
-            await compose(imagePath, fgPath, outputPath, format);
-
-            const attachment = new AttachmentBuilder(outputPath, { name: `fire${ext}` });
-            await message.reply({ content: replyPrefix || undefined, files: [attachment] });
+            const result = await this.processImage(imageUrl, 'gif', false);
+            try {
+                const attachment = new AttachmentBuilder(result.filePath, { name: 'fire.gif' });
+                await message.reply({ content: replyPrefix || undefined, files: [attachment] });
+            } finally {
+                result.cleanup();
+            }
         } catch (err) {
             console.error('Error:', err);
             const errMsg = err instanceof Error ? err.message : String(err);
             await message.reply(`Error: ${errMsg}`).catch(() => { });
-        } finally {
-            this.cleanup(imagePath, outputPath);
         }
+    }
+
+    private async processImage(imageUrl: string, format: OutputFormat, lowQuality: boolean): Promise<ProcessResult> {
+        const fgPath = path.resolve(config.foregroundVideo);
+        if (!fs.existsSync(fgPath)) {
+            throw new Error('foreground video file not found');
+        }
+
+        // 画像をダウンロードしてバッファに読み込む
+        const imagePath = this.tempPath('.png');
+        await this.downloadFile(imageUrl, imagePath);
+        const imageBuffer = fs.readFileSync(imagePath);
+        const imageHash = crypto.createHash('sha256').update(imageBuffer).digest('hex');
+
+        // キャッシュIDを生成（format非依存）
+        const cacheId = generateCacheId(imageBuffer, lowQuality);
+
+        // キャッシュ確認
+        let cachedGifPath = getCachedResult(cacheId);
+
+        if (!cachedGifPath) {
+            // キャッシュなし → GIFをレンダリングしてキャッシュに保存
+            logger.info(`Cache miss, rendering: ${cacheId}`);
+            const tempGif = this.tempPath('.gif');
+            try {
+                await compose(imagePath, fgPath, tempGif, 'gif', lowQuality);
+                cachedGifPath = saveCacheResult(cacheId, imageHash, lowQuality, tempGif);
+            } finally {
+                this.cleanup(tempGif);
+            }
+        }
+
+        this.cleanup(imagePath);
+
+        // フォーマットに応じて返却
+        if (format === 'mp4') {
+            // GIFからMP4に変換
+            const tempMp4 = this.tempPath('.mp4');
+            await gifToMp4(cachedGifPath, tempMp4);
+            return {
+                filePath: tempMp4,
+                cleanup: () => this.cleanup(tempMp4)
+            };
+        }
+
+        // GIFの場合はキャッシュファイルをそのまま使用（削除しない）
+        return {
+            filePath: cachedGifPath,
+            cleanup: () => { }
+        };
     }
 
     private downloadFile(url: string, dest: string): Promise<string> {
@@ -140,4 +189,3 @@ export class FireCommand implements Command {
         }
     }
 }
-

@@ -1,5 +1,6 @@
 import { Client, GatewayIntentBits } from 'discord.js';
 import { Command } from './command';
+import logger from './logger';
 
 export class Bot {
     private readonly client: Client;
@@ -37,11 +38,11 @@ export class Bot {
     }
 
     private async onReady(): Promise<void> {
-        console.log(`Logged in as ${this.client.user!.tag}`);
+        logger.info(`Logged in as ${this.client.user!.tag}`);
 
         const commandData = [...this.commands.values()].map(c => c.data.toJSON());
         await this.client.application!.commands.set(commandData);
-        console.log(`Registered ${commandData.length} command(s)`);
+        logger.info(`Registered ${commandData.length} command(s)`);
     }
 
     private async onCommand(interaction: import('discord.js').ChatInputCommandInteraction): Promise<void> {
@@ -51,7 +52,7 @@ export class Bot {
         try {
             await command.execute(interaction);
         } catch (err) {
-            console.error(`Command error [${interaction.commandName}]:`, err);
+            logger.error(`Command error [${interaction.commandName}]: ${err}`);
         }
     }
 
@@ -66,7 +67,7 @@ export class Bot {
         try {
             await command.onMessage(message);
         } catch (err) {
-            console.error(`Message command error [${commandName}]:`, err);
+            logger.error(`Message command error [${commandName}]: ${err}`);
         }
     }
 }
