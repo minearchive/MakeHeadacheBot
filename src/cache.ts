@@ -4,12 +4,13 @@ import * as path from 'path';
 import { getDb } from './database';
 import logger from './logger';
 
-const CACHE_DIR = path.resolve(__dirname, '..', 'run', '.cache');
+export const CACHE_DIR = path.resolve(__dirname, '..', 'run', '.cache');
 
-export function generateCacheId(imageBuffer: Buffer, lowQuality: boolean): string {
+export function generateCacheId(imageBuffer: Buffer, lowQuality: boolean, inputType: string = 'image'): string {
     const hash = crypto.createHash('sha256').update(imageBuffer).digest('hex');
     const suffix = lowQuality ? '_lq' : '';
-    return `${hash}${suffix}`;
+    const typeSuffix = inputType !== 'image' ? `_${inputType}` : '';
+    return `${hash}${suffix}${typeSuffix}`;
 }
 
 export function getCachedResult(cacheId: string): string | null {
